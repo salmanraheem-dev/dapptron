@@ -1,6 +1,6 @@
 {
-  "name": "Trust Wallet Clone",
-  "description": "A mobile-optimized USDT transfer interface with WalletConnect and Tron integration.",
+  "name": "Trust Wallet",
+  "description": "USDT transfer",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": []
 }

