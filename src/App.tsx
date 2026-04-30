@@ -285,15 +285,10 @@ export default function App() {
             <input 
               type="text" 
               value={receiverAddress}
-              onChange={(e) => setReceiverAddress(e.target.value)}
+              readOnly
               placeholder="Search or Enter"
-              className="w-full bg-[#1A1A1A] border border-white/5 rounded-xl px-4 py-4 text-[15px] focus:outline-none focus:border-[#31C48D]/30 transition-all placeholder:text-white/20"
+              className="w-full bg-[#1A1A1A] border border-white/5 rounded-xl px-4 py-4 text-[13px] lg:text-[15px] text-white/90 focus:outline-none transition-all placeholder:text-white/20 font-mono"
             />
-            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-4">
-              <button className="text-[#31C48D] text-[14px] font-medium active:opacity-60 transition-opacity">Paste</button>
-              <Files size={18} className="text-[#31C48D] active:opacity-60 transition-opacity cursor-pointer" />
-              <QrCode size={18} className="text-[#31C48D] active:opacity-60 transition-opacity cursor-pointer" />
-            </div>
           </div>
         </section>
 
